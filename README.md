@@ -1,4 +1,4 @@
-# remarkable2-pdf-generator
+# remarkable2-pdf-downloader
 
 ## Overview
 
@@ -27,10 +27,10 @@ The location of the backups is set using the `-backupsDir` flag.
 The executable will the compiled to `${GOPATH}/bin/` or `go/bin/`
 
 ### Example usage
-`./remarkable2-pdf-generator -v -l -backupsDir mybackup/ -i foo -i bar -e baz`
+`./remarkable2-pdf-downloader -v -l -backupsDir mybackup/ -i foo -i bar -e baz`
 
 ### Tool help
-`./remarkable2-pdf-generator -h`
+`./remarkable2-pdf-downloader -h`
 
 ## Enabling the Web UI
 
