@@ -99,9 +99,11 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 
 		switch doc.Type {
 		case "DocumentType":
-			if _, ok := (*include)[doc.Id]; !ok {
-				if _, ok := (*include)[doc.Name]; !ok {
-					continue
+			if len((*include)) != 0 {
+				if _, ok := (*include)[doc.Id]; !ok {
+					if _, ok := (*include)[doc.Name]; !ok {
+						continue
+					}
 				}
 			}
 
