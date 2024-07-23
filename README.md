@@ -5,19 +5,10 @@
 This tool helps automate the process of downloading your notebooks as PDFs from your Remarkable2's web UI.
 It will skip over any notebooks that haven't been changed since the last use of this tool.
 
-Make sure to enable the web UI on your rm2 ([Guide](#enabling-the-web-ui))!
+## Requirements:
 
-## Downloaded Files Structure
-
-The location of the backups is set using the `-backupsDir` flag.
-
-```
-.
-├── .last_modified      # used internally to determine whether to re-download a notebook
-├── .backup.logs        # location of output logs if the -l flag is set
-│
-└── ... Your Remarkable Files ...
-```
+1. Have Golang installed.
+2. Make sure to enable the web UI on your Rm2 ([Guide](#enabling-the-web-ui))!
 
 ## Tool Usage
 
@@ -31,6 +22,18 @@ The executable will the compiled to `${GOPATH}/bin/` or `go/bin/`
 
 ### Tool help
 `./remarkable2-pdf-downloader -h`
+
+## Downloaded Files Structure
+
+The location of the backups is set using the `-backupsDir` flag.
+
+```
+.
+├── .last_modified      # used internally to determine whether to re-download a notebook
+├── .backup.logs        # location of output logs if the -l flag is set
+│
+└── ... Your Remarkable Files ...
+```
 
 ## Enabling the Web UI
 
