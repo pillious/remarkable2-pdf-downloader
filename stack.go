@@ -10,12 +10,14 @@ func (stack *Stack[T]) Push(element T) {
 	*stack = append(*stack, element)
 }
 
+// Assumes len(stack) > 0
 func (stack *Stack[T]) Pop() T {
-	element := (*stack)[0]
-	if len(*stack) > 1 {
-		stack = &Stack[T]{}
+	l := len(*stack)
+	element := (*stack)[l-1]
+	if l > 1 {
+		*stack = (*stack)[:l-1]
 	} else {
-		*stack = (*stack)[1:]
+		*stack = Stack[T]{}
 	}
 	return element
 }
