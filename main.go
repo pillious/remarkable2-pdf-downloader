@@ -12,6 +12,25 @@ import (
 	"time"
 )
 
+/*
+TODO:
+[-] handle file moves/renames
+[] handle folder moves/renames
+[] remove deleted files
+[] remove deleted folders
+[-] handle download files inside an included folder
+*/
+
+/*
+NOTES:
+
+include/exclude sets -- folders denoted with "/" at the end
+folder eg: test/ test/test2/
+file eg: abc test/abc
+
+don't allow ids in include/exclude sets
+*/
+
 var (
 	backupsDir  string
 	baseUrl     string
@@ -20,8 +39,8 @@ var (
 	doLogToFile bool
 	verbose     bool
 
-	logFileName                 = ".backup.logs"
-	lastModifiedFileName string = ".last_modified.json"
+	logFileName               = ".backup.logs"
+	backupInfoFileName string = ".backup_info.json"
 )
 
 type Document struct {
@@ -30,8 +49,18 @@ type Document struct {
 	Parent    string `json:"Parent"`
 	Type      string `json:"Type"`
 	Name      string `json:"VissibleName"`
+	Size      string `json:"sizeInBytes"`
 	// Only defined a subset of the fields
 }
+
+type NotebookInfo struct {
+	Name      string `json:"name"`
+	UpdatedAt string `json:"updatedAt"`
+	Path      string `json:"path"`
+	Size      uint64 `json:"size"`
+}
+
+type BackupInfo map[string]NotebookInfo
 
 func main() {
 	parseFlags()
@@ -44,15 +73,15 @@ func main() {
 
 	includeSet := sliceToSet(includeList)
 	excludeSet := sliceToSet(excludeList)
-	modificationTimes := getLastModifiedTimes()
+	prevBackupInfo := getPrevBackupInfo()
 
 	if verbose {
 		log.Println("Starting Downloads.")
 		log.Println("-------------------")
 	}
 
-	traverseFileSystem(Stack[string]{}, "", &includeSet, &excludeSet, modificationTimes)
-	updateLastModifiedTimes(modificationTimes)
+	traverseFileSystem(Stack[string]{}, "", &includeSet, &excludeSet, prevBackupInfo)
+	writeBackupInfo(prevBackupInfo)
 
 	if verbose {
 		log.Println("-------------------")
@@ -73,11 +102,16 @@ func parseFlags() {
 	flag.Parse()
 }
 
-func traverseFileSystem(path Stack[string], folderId string, include *map[string]struct{}, exclude *map[string]struct{}, modificationTimes *map[string]string) {
+func traverseFileSystem(path Stack[string], folderId string, include *map[string]struct{}, exclude *map[string]struct{}, backupInfo *BackupInfo) {
+	log.Println(path)
 	isRoot := folderId == ""
-	pathStr := strings.Join(path, "/")
+	relPathStr := "."
+	if !path.isEmpty() {
+		relPathStr = strings.Join(path, "/")
+	}
+	absPathStr := genFullPath(strings.Join(path, "/"))
 
-	makeDir(backupsDir + "/" + pathStr)
+	makeDir(absPathStr)
 
 	var docs []Document
 	if isRoot {
@@ -87,48 +121,65 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 	}
 
 	for _, doc := range docs {
-		if _, ok := (*exclude)[doc.Id]; ok {
+		doc.UpdatedAt = stripMsecFromTime(doc.UpdatedAt)
+
+		name := doc.Name
+		if relPathStr != "." {
+			name = relPathStr + "/" + name
+		}
+		if doc.Type == "CollectionType" {
+			name += "/"
+		}
+
+		if _, ok := (*exclude)[name]; ok {
 			continue
 		}
-		if _, ok := (*exclude)[doc.Name]; ok {
-			continue
-		}
-		if !didModificationTimeChange(doc.Id, doc.UpdatedAt, modificationTimes) {
-			continue
+		if len((*include)) != 0 {
+			if _, ok := (*include)[name]; !ok && !inIncludedFolder(include, path) {
+				continue
+			}
 		}
 
 		switch doc.Type {
 		case "DocumentType":
-			if len((*include)) != 0 {
-				if _, ok := (*include)[doc.Id]; !ok {
-					if _, ok := (*include)[doc.Name]; !ok {
-						continue
+			if isDocMoved(doc.Id, doc.Name, relPathStr, backupInfo) {
+				savedPath := (*backupInfo)[doc.Id].Path + "/" + (*backupInfo)[doc.Id].Name
+				oldPath := genFullPath(savedPath + ".pdf")
+				newPath := absPathStr + "/" + doc.Name + ".pdf"
+
+				err := os.Rename(oldPath, newPath)
+				if err != nil {
+					log.Panic(err)
+				}
+				if verbose {
+					log.Printf("Moved '%s' to '%s'.\n", savedPath, relPathStr+"/"+doc.Name+".pdf")
+				}
+			}
+
+			if isNotebookModified(doc.Id, doc.UpdatedAt, strToUint64(doc.Size), backupInfo) {
+				if verbose {
+					if isRoot {
+						log.Printf("%s ...\n", doc.Name)
+					} else {
+						log.Printf("%s/%s ...\n", relPathStr, doc.Name)
 					}
 				}
-			}
 
-			if verbose {
-				if isRoot {
-					log.Printf("%s ...\n", doc.Name)
-				} else {
-					log.Printf("%s/%s ...\n", pathStr, doc.Name)
+				startTime := time.Now()
+				pdfName, content := downloadDocument(doc.Id)
+				duration := time.Since(startTime).Seconds()
+				if verbose {
+					log.Printf("time: %.2fs | size: %s\n", duration, formatSize(len(*content)))
 				}
+
+				createPdf(pdfName, content, absPathStr)
 			}
 
-			startTime := time.Now()
-			pdfName, content := downloadDocument(doc.Id)
-			duration := time.Since(startTime).Seconds()
-			if verbose {
-				log.Printf("time: %.2fs | size: %s\n", duration, formatSize(len(*content)))
-			}
-
-			createPdf(pdfName, content, backupsDir+"/"+pathStr)
-			(*modificationTimes)[doc.Id] = doc.UpdatedAt
-
+			(*backupInfo)[doc.Id] = NotebookInfo{doc.Name, doc.UpdatedAt, relPathStr, strToUint64(doc.Size)}
 		case "CollectionType":
 			path.Push(doc.Name)
-			traverseFileSystem(path, doc.Id, include, exclude, modificationTimes)
-			removeEmptyDir(backupsDir + "/" + strings.Join(path, "/"))
+			traverseFileSystem(path, doc.Id, include, exclude, backupInfo)
+			removeEmptyDir(genFullPath(strings.Join(path, "/")))
 			path.Pop()
 		}
 	}
@@ -197,48 +248,65 @@ func downloadDocument(documentId string) (string, *[]byte) {
 	return fileName, &body
 }
 
-func getLastModifiedTimes() *map[string]string {
-	path := backupsDir + "/" + lastModifiedFileName
-	result := &map[string]string{}
-
+func getPrevBackupInfo() *BackupInfo {
+	path := genFullPath(backupInfoFileName)
+	backupInfo := &BackupInfo{}
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		log.Panic(err)
 	}
 	defer file.Close()
-	err = json.NewDecoder(file).Decode(result)
+	err = json.NewDecoder(file).Decode(backupInfo)
 	if err == io.EOF {
-		return result
+		return backupInfo
 	} else if err != nil {
 		log.Panic(err)
 	}
-
-	return result
+	return backupInfo
 }
 
-func updateLastModifiedTimes(modificationTimes *map[string]string) {
-	path := backupsDir + "/" + lastModifiedFileName
-
+func writeBackupInfo(backupInfo *BackupInfo) {
+	path := genFullPath(backupInfoFileName)
 	file, err := os.Create(path)
 	if err != nil {
 		log.Panic(err)
 	}
 	defer file.Close()
 
-	result, err := json.Marshal(modificationTimes)
+	result, err := json.Marshal(backupInfo)
 	if err != nil {
 		log.Panic(err)
 	}
 	file.WriteString(string(result))
 }
 
-func didModificationTimeChange(id string, newTime string, modificationTimes *map[string]string) bool {
-	if _, ok := (*modificationTimes)[id]; !ok {
-		return true
+func isDocMoved(id string, newName string, newPath string, backupInfo *BackupInfo) bool {
+	if entry, ok := (*backupInfo)[id]; ok {
+		return entry.Name != newName || entry.Path != newPath || (entry.Path == "" && newPath == ".")
 	}
+	return false
+}
 
-	layout := "2006-01-02T15:04:05.000Z"
-	t1, err := time.Parse(layout, (*modificationTimes)[id])
+// checks modification time AND size change b/c renaming a doc also updates the mod time.
+func isNotebookModified(id string, newTime string, newSize uint64, backupInfo *BackupInfo) bool {
+	if _, ok := (*backupInfo)[id]; ok {
+		return didModificationTimeChange(id, newTime, backupInfo) && didSizeChange(id, newSize, backupInfo)
+	}
+	return true
+}
+
+func didSizeChange(id string, newSize uint64, backupInfo *BackupInfo) bool {
+	return (*backupInfo)[id].Size != newSize
+}
+
+func stripMsecFromTime(time string) string {
+	i := strings.LastIndex(time, ".")
+	return time[:i]
+}
+
+func didModificationTimeChange(id string, newTime string, backupInfo *BackupInfo) bool {
+	layout := "2006-01-02T15:04:05"
+	t1, err := time.Parse(layout, (*backupInfo)[id].UpdatedAt)
 	if err != nil {
 		log.Println(err)
 		return true
@@ -250,4 +318,21 @@ func didModificationTimeChange(id string, newTime string, modificationTimes *map
 	}
 
 	return t1.Before(t2)
+}
+
+func inIncludedFolder(include *map[string]struct{}, path []string) bool {
+	for k := range *include {
+		if k[len(k)-1:] == "/" {
+			kSplit := strings.Split(k, "/")
+			if len(kSplit)-1 <= len(path) {
+				for i := 0; i < len(kSplit)-1; i++ {
+					if kSplit[i] != path[i] {
+						break
+					}
+				}
+				return true
+			}
+		}
+	}
+	return false
 }

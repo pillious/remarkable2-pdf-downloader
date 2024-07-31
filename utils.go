@@ -4,8 +4,20 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 )
+
+type listFlags []string
+
+func (l *listFlags) String() string {
+	return strings.Join(*l, ", ")
+}
+
+func (l *listFlags) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
 
 var logFile *os.File
 
@@ -77,6 +89,10 @@ func removeEmptyDir(path string) {
 	os.Remove(path)
 }
 
+func genFullPath(s string) string {
+	return backupsDir + "/" + s
+}
+
 func createPdf(fileName string, content *[]byte, path string) {
 	pdf, err := os.Create(path + "/" + fileName)
 	if err != nil {
@@ -90,13 +106,11 @@ func createPdf(fileName string, content *[]byte, path string) {
 	}
 }
 
-type listFlags []string
-
-func (l *listFlags) String() string {
-	return strings.Join(*l, ", ")
-}
-
-func (l *listFlags) Set(value string) error {
-	*l = append(*l, value)
-	return nil
+// returns 0 if the string can't be converted.
+func strToUint64(s string) uint64 {
+	num, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return num
 }
