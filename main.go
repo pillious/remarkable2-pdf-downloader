@@ -22,16 +22,6 @@ TODO:
 [-] handle download files inside an included folder
 */
 
-/*
-NOTES:
-
-include/exclude sets -- folders denoted with "/" at the end
-folder eg: test/ test/test2/
-file eg: abc test/abc
-
-don't allow ids in include/exclude sets
-*/
-
 var (
 	// -- Flags --
 	backupsDir  string
@@ -100,10 +90,10 @@ func parseFlags() {
 	flag.StringVar(&backupsDir, "backupsDir", ".", "The directory to store backups.")
 	flag.StringVar(&baseUrl, "url", "http://10.11.99.1:80", "Address of the Remarkable2 web UI.")
 
-	flag.Var(&includeList, "i", "A document/folder name or id to download. Add this flag multiple times to include multiple items.")
-	flag.Var(&excludeList, "e", "A document/folder name or id to skip. Add this flag multiple times to include multiple items. (Note: The exclude flag has higher precedence than the include flag)")
+	flag.Var(&includeList, "i", "A notebook/folder `path` to download. All paths are assumed to start from the root folder of your Remarkable.\nExample - path to notebook: foo/bar/mynotebook\nExample - path to folder: foo/bar/ (trailing forward slash REQUIRED)\n(Add this flag multiple times to include multiple items.)\n")
+	flag.Var(&excludeList, "e", "A notebook/folder `path` to skip. All paths are assumed to start from the root folder of your Remarkable.\nExample - path to notebook: foo/bar/mynotebook\nExample - path to folder: foo/bar/ (trailing forward slash REQUIRED)\n(Add this flag multiple times to skip multiple items.)\n")
 
-	flag.BoolVar(&doLogToFile, "l", false, "Write logs to {backupsDir}/backup.logs instead of STDOUT.")
+	flag.BoolVar(&doLogToFile, "l", false, "Write logs to {backupsDir}/.backup.logs instead of STDOUT.")
 	flag.BoolVar(&verbose, "v", false, "Enable verbose output.")
 
 	flag.Parse()
@@ -385,6 +375,7 @@ func didSizeChange(id string, newSize uint64, backupMap *DocumentBackupMap) bool
 	return (*backupMap)[id].Size != newSize
 }
 
+// Strips milliseconds and trailing Z from ISO 8601 timestamp
 func stripMsecFromTime(time string) string {
 	i := strings.LastIndex(time, ".")
 	return time[:i]
