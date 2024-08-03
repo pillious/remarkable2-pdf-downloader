@@ -15,7 +15,7 @@ import (
 /*
 TODO:
 [-] handle file moves/renames
-[] handle folder moves/renames
+[-] handle folder moves/renames
 [] remove deleted files
 [] remove deleted folders
 [-] handle download files inside an included folder
@@ -32,12 +32,14 @@ don't allow ids in include/exclude sets
 */
 
 var (
-	backupsDir  string
+	// -- Flags --
+	backupsDir  string // converted to absolute path after the value is read in.
 	baseUrl     string
 	includeList listFlags
 	excludeList listFlags
 	doLogToFile bool
 	verbose     bool
+	// -- Flags --
 
 	logFileName               = ".backup.logs"
 	backupInfoFileName string = ".backup_info.json"
@@ -50,17 +52,18 @@ type Document struct {
 	Type      string `json:"Type"`
 	Name      string `json:"VissibleName"`
 	Size      string `json:"sizeInBytes"`
-	// Only defined a subset of the fields
+	// Only defined a subset of the fields returned from the API
 }
 
-type NotebookInfo struct {
+type DocumentBackup struct {
 	Name      string `json:"name"`
 	UpdatedAt string `json:"updatedAt"`
 	Path      string `json:"path"`
 	Size      uint64 `json:"size"`
+	IsFolder  bool   `json:"isFolder"`
 }
 
-type BackupInfo map[string]NotebookInfo
+type DocumentBackupMap map[string]DocumentBackup
 
 func main() {
 	parseFlags()
@@ -102,7 +105,7 @@ func parseFlags() {
 	flag.Parse()
 }
 
-func traverseFileSystem(path Stack[string], folderId string, include *map[string]struct{}, exclude *map[string]struct{}, backupInfo *BackupInfo) {
+func traverseFileSystem(path Stack[string], folderId string, include *map[string]struct{}, exclude *map[string]struct{}, backupMap *DocumentBackupMap) {
 	log.Println(path)
 	isRoot := folderId == ""
 	relPathStr := "."
@@ -142,8 +145,8 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 
 		switch doc.Type {
 		case "DocumentType":
-			if isDocMoved(doc.Id, doc.Name, relPathStr, backupInfo) {
-				savedPath := (*backupInfo)[doc.Id].Path + "/" + (*backupInfo)[doc.Id].Name
+			if isDocMoved(doc.Id, doc.Name, relPathStr, backupMap) {
+				savedPath := (*backupMap)[doc.Id].Path + "/" + (*backupMap)[doc.Id].Name
 				oldPath := genFullPath(savedPath + ".pdf")
 				newPath := absPathStr + "/" + doc.Name + ".pdf"
 
@@ -152,11 +155,11 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 					log.Panic(err)
 				}
 				if verbose {
-					log.Printf("Moved '%s' to '%s'.\n", savedPath, relPathStr+"/"+doc.Name+".pdf")
+					log.Printf("Moved notebook '%s' to '%s'.\n", savedPath, relPathStr+"/"+doc.Name+".pdf")
 				}
 			}
 
-			if isNotebookModified(doc.Id, doc.UpdatedAt, strToUint64(doc.Size), backupInfo) {
+			if isNotebookModified(doc.Id, doc.UpdatedAt, strToUint64(doc.Size), backupMap) {
 				if verbose {
 					if isRoot {
 						log.Printf("%s ...\n", doc.Name)
@@ -175,11 +178,43 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 				createPdf(pdfName, content, absPathStr)
 			}
 
-			(*backupInfo)[doc.Id] = NotebookInfo{doc.Name, doc.UpdatedAt, relPathStr, strToUint64(doc.Size)}
+			(*backupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, strToUint64(doc.Size), false}
 		case "CollectionType":
+			symlinkPath := ""
+			if isDocMoved(doc.Id, doc.Name, relPathStr, backupMap) {
+				savedPath := (*backupMap)[doc.Id].Path + "/" + (*backupMap)[doc.Id].Name
+				oldPath := genFullPath(savedPath)
+				newPath := absPathStr + "/" + doc.Name
+
+				err := os.Rename(oldPath, newPath)
+				if err != nil {
+					log.Panic(err)
+				}
+				if verbose {
+					log.Printf("Moved folder '%s/' -> '%s/'.\n", savedPath, relPathStr+"/"+doc.Name)
+				}
+
+				err = os.Symlink(newPath, oldPath)
+				if err != nil {
+					log.Panic(err)
+				}
+				symlinkPath = oldPath
+			}
+
 			path.Push(doc.Name)
-			traverseFileSystem(path, doc.Id, include, exclude, backupInfo)
-			removeEmptyDir(genFullPath(strings.Join(path, "/")))
+			traverseFileSystem(path, doc.Id, include, exclude, backupMap)
+			if symlinkPath != "" {
+				err := os.Remove(symlinkPath)
+				if err != nil {
+					log.Panic(err)
+				}
+			}
+			// TODO: do i need this??
+			// didRemove := removeEmptyDir(genFullPath(strings.Join(path, "/")))
+			// if !didRemove {
+			// 	(*backupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, 0, true}
+			// }
+			(*backupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, 0, true}
 			path.Pop()
 		}
 	}
@@ -248,9 +283,9 @@ func downloadDocument(documentId string) (string, *[]byte) {
 	return fileName, &body
 }
 
-func getPrevBackupInfo() *BackupInfo {
+func getPrevBackupInfo() *DocumentBackupMap {
 	path := genFullPath(backupInfoFileName)
-	backupInfo := &BackupInfo{}
+	backupInfo := &DocumentBackupMap{}
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		log.Panic(err)
@@ -265,7 +300,7 @@ func getPrevBackupInfo() *BackupInfo {
 	return backupInfo
 }
 
-func writeBackupInfo(backupInfo *BackupInfo) {
+func writeBackupInfo(backupInfo *DocumentBackupMap) {
 	path := genFullPath(backupInfoFileName)
 	file, err := os.Create(path)
 	if err != nil {
@@ -280,23 +315,25 @@ func writeBackupInfo(backupInfo *BackupInfo) {
 	file.WriteString(string(result))
 }
 
-func isDocMoved(id string, newName string, newPath string, backupInfo *BackupInfo) bool {
-	if entry, ok := (*backupInfo)[id]; ok {
+func isDocMoved(id string, newName string, newPath string, backupMap *DocumentBackupMap) bool {
+	if entry, ok := (*backupMap)[id]; ok {
 		return entry.Name != newName || entry.Path != newPath || (entry.Path == "" && newPath == ".")
 	}
 	return false
 }
 
 // checks modification time AND size change b/c renaming a doc also updates the mod time.
-func isNotebookModified(id string, newTime string, newSize uint64, backupInfo *BackupInfo) bool {
-	if _, ok := (*backupInfo)[id]; ok {
-		return didModificationTimeChange(id, newTime, backupInfo) && didSizeChange(id, newSize, backupInfo)
+func isNotebookModified(id string, newTime string, newSize uint64, backupMap *DocumentBackupMap) bool {
+	if entry, ok := (*backupMap)[id]; ok {
+		if !entry.IsFolder {
+			return didModificationTimeChange(id, newTime, backupMap) && didSizeChange(id, newSize, backupMap)
+		}
 	}
 	return true
 }
 
-func didSizeChange(id string, newSize uint64, backupInfo *BackupInfo) bool {
-	return (*backupInfo)[id].Size != newSize
+func didSizeChange(id string, newSize uint64, backupMap *DocumentBackupMap) bool {
+	return (*backupMap)[id].Size != newSize
 }
 
 func stripMsecFromTime(time string) string {
@@ -304,9 +341,9 @@ func stripMsecFromTime(time string) string {
 	return time[:i]
 }
 
-func didModificationTimeChange(id string, newTime string, backupInfo *BackupInfo) bool {
+func didModificationTimeChange(id string, newTime string, backupMap *DocumentBackupMap) bool {
 	layout := "2006-01-02T15:04:05"
-	t1, err := time.Parse(layout, (*backupInfo)[id].UpdatedAt)
+	t1, err := time.Parse(layout, (*backupMap)[id].UpdatedAt)
 	if err != nil {
 		log.Println(err)
 		return true

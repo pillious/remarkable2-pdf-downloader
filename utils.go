@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type listFlags []string
@@ -85,12 +88,32 @@ func makeDir(path string) {
 	}
 }
 
-func removeEmptyDir(path string) {
-	os.Remove(path)
+func removeEmptyDir(path string) bool {
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		log.Panic(err)
+	}
+	if !fileInfo.IsDir() {
+		log.Panicf("%s is a file not a directory.\n", path)
+	}
+
+	err = os.Remove(path)
+	if err != nil {
+		if errors.Is(err, syscall.ENOTEMPTY) {
+			return false
+		} else {
+			log.Panic(err)
+		}
+	}
+	return true
 }
 
 func genFullPath(s string) string {
-	return backupsDir + "/" + s
+	absPath, err := filepath.Abs(backupsDir)
+	if err != nil {
+		log.Panic(err)
+	}
+	return absPath + "/" + s
 }
 
 func createPdf(fileName string, content *[]byte, path string) {
