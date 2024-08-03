@@ -32,8 +32,12 @@ func (set *Set[T]) union(other *Set[T]) Set[T] {
 
 func (set *Set[T]) intersect(other *Set[T]) Set[T] {
 	inter := Set[T]{}
-	for item := range *set {
-		if other.has(item) {
+	a, b := set, other
+	if len(*a) > len(*b) {
+		a, b = other, set
+	}
+	for item := range *a {
+		if b.has(item) {
 			inter.add(item)
 		}
 	}
