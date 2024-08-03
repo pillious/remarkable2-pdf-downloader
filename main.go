@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"log"
@@ -33,7 +34,7 @@ don't allow ids in include/exclude sets
 
 var (
 	// -- Flags --
-	backupsDir  string // converted to absolute path after the value is read in.
+	backupsDir  string
 	baseUrl     string
 	includeList listFlags
 	excludeList listFlags
@@ -77,19 +78,22 @@ func main() {
 	includeSet := sliceToSet(includeList)
 	excludeSet := sliceToSet(excludeList)
 	prevBackupInfo := getPrevBackupInfo()
+	visited := &Set[string]{}
 
 	if verbose {
-		log.Println("Starting Downloads.")
+		log.Println("Begin Remarkable PDF backups.")
 		log.Println("-------------------")
 	}
 
-	traverseFileSystem(Stack[string]{}, "", &includeSet, &excludeSet, prevBackupInfo)
+	backupDocsAsPdfs(Stack[string]{}, "", &includeSet, &excludeSet, prevBackupInfo, visited)
+	// syncDeletedDocs(prevBackupInfo, visited, &includeSet, &excludeSet)
 	writeBackupInfo(prevBackupInfo)
 
 	if verbose {
 		log.Println("-------------------")
-		log.Println("Downloads complete.")
+		log.Println("Complete Remarkable PDF backups.")
 	}
+
 }
 
 func parseFlags() {
@@ -105,8 +109,7 @@ func parseFlags() {
 	flag.Parse()
 }
 
-func traverseFileSystem(path Stack[string], folderId string, include *map[string]struct{}, exclude *map[string]struct{}, backupMap *DocumentBackupMap) {
-	log.Println(path)
+func backupDocsAsPdfs(path Stack[string], folderId string, include *Set[string], exclude *Set[string], prevBackupMap *DocumentBackupMap, visited *Set[string]) {
 	isRoot := folderId == ""
 	relPathStr := "."
 	if !path.isEmpty() {
@@ -134,19 +137,18 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 			name += "/"
 		}
 
-		if _, ok := (*exclude)[name]; ok {
+		if exclude.has(name) {
+			continue
+		} else if !include.isEmpty() && !include.has(name) && !inIncludedFolder(include, path) {
 			continue
 		}
-		if len((*include)) != 0 {
-			if _, ok := (*include)[name]; !ok && !inIncludedFolder(include, path) {
-				continue
-			}
-		}
+
+		visited.add(doc.Id)
 
 		switch doc.Type {
 		case "DocumentType":
-			if isDocMoved(doc.Id, doc.Name, relPathStr, backupMap) {
-				savedPath := (*backupMap)[doc.Id].Path + "/" + (*backupMap)[doc.Id].Name
+			if isDocMoved(doc.Id, doc.Name, relPathStr, prevBackupMap) {
+				savedPath := (*prevBackupMap)[doc.Id].Path + "/" + (*prevBackupMap)[doc.Id].Name
 				oldPath := genFullPath(savedPath + ".pdf")
 				newPath := absPathStr + "/" + doc.Name + ".pdf"
 
@@ -159,7 +161,7 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 				}
 			}
 
-			if isNotebookModified(doc.Id, doc.UpdatedAt, strToUint64(doc.Size), backupMap) {
+			if isNotebookModified(doc.Id, doc.UpdatedAt, strToUint64(doc.Size), prevBackupMap) {
 				if verbose {
 					if isRoot {
 						log.Printf("%s ...\n", doc.Name)
@@ -178,11 +180,11 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 				createPdf(pdfName, content, absPathStr)
 			}
 
-			(*backupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, strToUint64(doc.Size), false}
+			(*prevBackupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, strToUint64(doc.Size), false}
 		case "CollectionType":
 			symlinkPath := ""
-			if isDocMoved(doc.Id, doc.Name, relPathStr, backupMap) {
-				savedPath := (*backupMap)[doc.Id].Path + "/" + (*backupMap)[doc.Id].Name
+			if isDocMoved(doc.Id, doc.Name, relPathStr, prevBackupMap) {
+				savedPath := (*prevBackupMap)[doc.Id].Path + "/" + (*prevBackupMap)[doc.Id].Name
 				oldPath := genFullPath(savedPath)
 				newPath := absPathStr + "/" + doc.Name
 
@@ -202,7 +204,7 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 			}
 
 			path.Push(doc.Name)
-			traverseFileSystem(path, doc.Id, include, exclude, backupMap)
+			backupDocsAsPdfs(path, doc.Id, include, exclude, prevBackupMap, visited)
 			if symlinkPath != "" {
 				err := os.Remove(symlinkPath)
 				if err != nil {
@@ -214,8 +216,52 @@ func traverseFileSystem(path Stack[string], folderId string, include *map[string
 			// if !didRemove {
 			// 	(*backupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, 0, true}
 			// }
-			(*backupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, 0, true}
+			(*prevBackupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, 0, true}
 			path.Pop()
+		}
+	}
+}
+
+func syncDeletedDocs(prevBackupInfo *DocumentBackupMap, visited *Set[string], include *Set[string], exclude *Set[string]) {
+	log.Println(visited)
+	log.Println(include)
+	log.Println(exclude)
+	log.Println(prevBackupInfo)
+
+	keySet := Set[string]{}
+	for k := range *prevBackupInfo {
+		keySet.add(k)
+	}
+	notVisited := keySet.difference(visited)
+
+	for id := range notVisited {
+		// TODO: dont delete if notVisited_id is in the exclusion set.
+		// TODO: dont delete if notVisited_id is not in the inclusion set.
+		// TODO: update the prev backupinfo -- remove any keys that have been deleted.
+
+		if entry, ok := (*prevBackupInfo)[id]; ok {
+			relPath := "."
+			if entry.Path != "" {
+				relPath = entry.Path + "/" + entry.Name
+			}
+			if entry.IsFolder {
+				relPath += "/"
+			}
+			absPath := genFullPath(entry.Path + "/" + entry.Name)
+
+			if _, err := os.Stat(absPath); err == nil {
+				err = os.RemoveAll(absPath)
+				if err != nil {
+					log.Panic(err)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				log.Panic(err)
+			}
+
+			delete(*prevBackupInfo, id)
+			if verbose {
+				log.Printf("Removed %s\n.", relPath)
+			}
 		}
 	}
 }
@@ -276,6 +322,7 @@ func downloadDocument(documentId string) (string, *[]byte) {
 		log.Panic(res.StatusCode)
 	}
 
+	// Content-Disposition header contains the notebook name.
 	re := regexp.MustCompile(`"(.+)"$`)
 	matches := re.FindStringSubmatch(res.Header["Content-Disposition"][0])
 	fileName := matches[1]
@@ -315,6 +362,7 @@ func writeBackupInfo(backupInfo *DocumentBackupMap) {
 	file.WriteString(string(result))
 }
 
+// Checks if a document has been renamed and/or moved.
 func isDocMoved(id string, newName string, newPath string, backupMap *DocumentBackupMap) bool {
 	if entry, ok := (*backupMap)[id]; ok {
 		return entry.Name != newName || entry.Path != newPath || (entry.Path == "" && newPath == ".")
@@ -322,7 +370,7 @@ func isDocMoved(id string, newName string, newPath string, backupMap *DocumentBa
 	return false
 }
 
-// checks modification time AND size change b/c renaming a doc also updates the mod time.
+// Checks modification time AND size change b/c renaming a doc also updates the mod time.
 func isNotebookModified(id string, newTime string, newSize uint64, backupMap *DocumentBackupMap) bool {
 	if entry, ok := (*backupMap)[id]; ok {
 		if !entry.IsFolder {
@@ -332,6 +380,7 @@ func isNotebookModified(id string, newTime string, newSize uint64, backupMap *Do
 	return true
 }
 
+// Assumes id is in backupMap
 func didSizeChange(id string, newSize uint64, backupMap *DocumentBackupMap) bool {
 	return (*backupMap)[id].Size != newSize
 }
@@ -341,6 +390,7 @@ func stripMsecFromTime(time string) string {
 	return time[:i]
 }
 
+// Assumes id is in backupMap
 func didModificationTimeChange(id string, newTime string, backupMap *DocumentBackupMap) bool {
 	layout := "2006-01-02T15:04:05"
 	t1, err := time.Parse(layout, (*backupMap)[id].UpdatedAt)
@@ -357,7 +407,7 @@ func didModificationTimeChange(id string, newTime string, backupMap *DocumentBac
 	return t1.Before(t2)
 }
 
-func inIncludedFolder(include *map[string]struct{}, path []string) bool {
+func inIncludedFolder(include *Set[string], path []string) bool {
 	for k := range *include {
 		if k[len(k)-1:] == "/" {
 			kSplit := strings.Split(k, "/")

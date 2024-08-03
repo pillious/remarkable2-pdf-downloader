@@ -49,11 +49,11 @@ func closeFileLogger() {
 	}
 }
 
-func sliceToSet(lst []string) map[string]struct{} {
-	set := make(map[string]struct{})
+func sliceToSet(lst []string) Set[string] {
+	set := make(Set[string])
 	for _, s := range lst {
 		s = strings.TrimSpace(s)
-		set[s] = struct{}{}
+		set.add(s)
 	}
 	return set
 }
