@@ -4,12 +4,16 @@
 
 This tool helps automate the process of downloading your notebooks as PDFs from your Remarkable2's web UI.
 Customize the folders or notebooks you want to download and which ones to skip over. Any notebooks that haven't been changed since the last use of the tool will be skipped.
+<br/><br/>
+Interested in backing up your Remarkable notebooks in their raw form?
+Check out [RM2 Backup Generator](https://github.com/pillious/remarkable2-backup-generator).
 
 ## Requirements:
 
 1. Have Golang installed.
 2. Make sure to enable the web UI on your Rm2 ([Guide](#enabling-the-web-ui))!
-3. **Do not have duplicate names** in the same folder on your Remarakble (your PC filesystem can't handle that).
+3. **Do not** use duplicate names in the same folder on your Remarakble (your PC filesystem can't handle that).
+4. **Do not** use slashes in your file/notebook naming (your PC filesystem can't handle this either :/ ).
 
 ## Tool Usage
 
