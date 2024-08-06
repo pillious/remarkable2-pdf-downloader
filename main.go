@@ -17,8 +17,8 @@ import (
 TODO:
 [-] handle file moves/renames
 [-] handle folder moves/renames
-[] remove deleted files
-[] remove deleted folders
+[-] remove deleted files
+[-] remove deleted folders
 [-] handle download files inside an included folder
 */
 
@@ -76,7 +76,7 @@ func main() {
 	}
 
 	backupDocsAsPdfs(Stack[string]{}, "", &includeSet, &excludeSet, prevBackupInfo, visited)
-	// syncDeletedDocs(prevBackupInfo, visited, &includeSet, &excludeSet)
+	syncDeletedDocs(prevBackupInfo, visited, &includeSet, &excludeSet)
 	writeBackupInfo(prevBackupInfo)
 
 	if verbose {
@@ -129,7 +129,7 @@ func backupDocsAsPdfs(path Stack[string], folderId string, include *Set[string],
 
 		if exclude.has(name) {
 			continue
-		} else if !include.isEmpty() && !include.has(name) && !inIncludedFolder(include, path) {
+		} else if !include.isEmpty() && !include.has(name) && !hasCommonPrefix(include, path) {
 			continue
 		}
 
@@ -147,16 +147,16 @@ func backupDocsAsPdfs(path Stack[string], folderId string, include *Set[string],
 					log.Panic(err)
 				}
 				if verbose {
-					log.Printf("Moved notebook '%s' to '%s'.\n", savedPath, relPathStr+"/"+doc.Name+".pdf")
+					log.Printf("Moved notebook '%s' to '%s'\n", savedPath, relPathStr+"/"+doc.Name+".pdf")
 				}
 			}
 
 			if isNotebookModified(doc.Id, doc.UpdatedAt, strToUint64(doc.Size), prevBackupMap) {
 				if verbose {
 					if isRoot {
-						log.Printf("%s ...\n", doc.Name)
+						log.Printf("Downloading %s ...\n", doc.Name)
 					} else {
-						log.Printf("%s/%s ...\n", relPathStr, doc.Name)
+						log.Printf("Downloading %s/%s ...\n", relPathStr, doc.Name)
 					}
 				}
 
@@ -168,6 +168,12 @@ func backupDocsAsPdfs(path Stack[string], folderId string, include *Set[string],
 				}
 
 				createPdf(pdfName, content, absPathStr)
+			} else if verbose {
+				if isRoot {
+					log.Printf("Unmodified %s\n", doc.Name)
+				} else {
+					log.Printf("Unmodified %s/%s\n", relPathStr, doc.Name)
+				}
 			}
 
 			(*prevBackupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, strToUint64(doc.Size), false}
@@ -183,7 +189,7 @@ func backupDocsAsPdfs(path Stack[string], folderId string, include *Set[string],
 					log.Panic(err)
 				}
 				if verbose {
-					log.Printf("Moved folder '%s/' -> '%s/'.\n", savedPath, relPathStr+"/"+doc.Name)
+					log.Printf("Moved folder '%s/' -> '%s/'\n", savedPath, relPathStr+"/"+doc.Name)
 				}
 
 				err = os.Symlink(newPath, oldPath)
@@ -201,11 +207,6 @@ func backupDocsAsPdfs(path Stack[string], folderId string, include *Set[string],
 					log.Panic(err)
 				}
 			}
-			// TODO: do i need this??
-			// didRemove := removeEmptyDir(genFullPath(strings.Join(path, "/")))
-			// if !didRemove {
-			// 	(*backupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, 0, true}
-			// }
 			(*prevBackupMap)[doc.Id] = DocumentBackup{doc.Name, doc.UpdatedAt, relPathStr, 0, true}
 			path.Pop()
 		}
@@ -213,11 +214,6 @@ func backupDocsAsPdfs(path Stack[string], folderId string, include *Set[string],
 }
 
 func syncDeletedDocs(prevBackupInfo *DocumentBackupMap, visited *Set[string], include *Set[string], exclude *Set[string]) {
-	log.Println(visited)
-	log.Println(include)
-	log.Println(exclude)
-	log.Println(prevBackupInfo)
-
 	keySet := Set[string]{}
 	for k := range *prevBackupInfo {
 		keySet.add(k)
@@ -225,18 +221,20 @@ func syncDeletedDocs(prevBackupInfo *DocumentBackupMap, visited *Set[string], in
 	notVisited := keySet.difference(visited)
 
 	for id := range notVisited {
-		// TODO: dont delete if notVisited_id is in the exclusion set.
-		// TODO: dont delete if notVisited_id is not in the inclusion set.
-		// TODO: update the prev backupinfo -- remove any keys that have been deleted.
-
 		if entry, ok := (*prevBackupInfo)[id]; ok {
-			relPath := "."
-			if entry.Path != "" {
-				relPath = entry.Path + "/" + entry.Name
+			savedPath := (*prevBackupInfo)[id].Path
+			name := (*prevBackupInfo)[id].Name
+			if savedPath != "" {
+				name = savedPath + "/" + name
 			}
-			if entry.IsFolder {
-				relPath += "/"
+
+			nameSlice := strings.Split(name, "/")
+			if exclude.has(name) || hasCommonPrefix(exclude, nameSlice) {
+				continue
+			} else if !include.isEmpty() && !include.has(name) && !hasCommonPrefix(include, nameSlice) {
+				continue
 			}
+
 			absPath := genFullPath(entry.Path + "/" + entry.Name)
 
 			if _, err := os.Stat(absPath); err == nil {
@@ -250,7 +248,10 @@ func syncDeletedDocs(prevBackupInfo *DocumentBackupMap, visited *Set[string], in
 
 			delete(*prevBackupInfo, id)
 			if verbose {
-				log.Printf("Removed %s\n.", relPath)
+				if entry.IsFolder {
+					name += "/"
+				}
+				log.Printf("Removed %s\n", name)
 			}
 		}
 	}
@@ -398,13 +399,15 @@ func didModificationTimeChange(id string, newTime string, backupMap *DocumentBac
 	return t1.Before(t2)
 }
 
-func inIncludedFolder(include *Set[string], path []string) bool {
-	for k := range *include {
+// Given a set of paths (to files or dirs), checks if search has a common prefix with any of the paths.
+// Dirs are denoted with a trailing foward slash.
+func hasCommonPrefix(paths *Set[string], search []string) bool {
+	for k := range *paths {
 		if k[len(k)-1:] == "/" {
 			kSplit := strings.Split(k, "/")
-			if len(kSplit)-1 <= len(path) {
+			if len(kSplit)-1 <= len(search) {
 				for i := 0; i < len(kSplit)-1; i++ {
-					if kSplit[i] != path[i] {
+					if kSplit[i] != search[i] {
 						break
 					}
 				}
